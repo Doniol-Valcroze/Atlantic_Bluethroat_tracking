@@ -1,0 +1,3 @@
+﻿ring_number;tag_id;observation_type;datetime;latitude;longitude;location_name;device_status;observer;catching_method;age_class;sex;condition;mass;wing_length;additional_metric;observation_comments
+9263840;CS759;equipment;23/05/2024;46.20157;-1.41871;;;;;4;U;;;;;
+9263840;CS759;retrieval;11/04/2025;46.20157;-1.41871;;;;;4;U;;;;;

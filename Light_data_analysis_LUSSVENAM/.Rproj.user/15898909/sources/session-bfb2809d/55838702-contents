@@ -1,0 +1,710 @@
+# We removed points between three weeks before and three weeks after the fall and spring equinoxes
+# (1 September 2022—13 October 2022 and 27 February 2023—10 April 2023),
+# because similar day length around the world during this period results in high error for latitude estimates.
+
+
+library(GeoLocTools)
+library(GeoLight)
+setupGeolocation()
+
+
+ID <- "BA813"
+Species <- "LusSve"
+
+lon.calib <- -0.81
+lat.calib <- 45.47
+
+wd <- "data"
+
+raw <- readMTlux(paste0(wd, "/RawData/", Species, "/", ID, ".lux"))
+names(raw) <- c("Date", "Light")
+raw$Light  <- log(raw$Light+0.0001) + abs(min(log(raw$Light+0.0001)))
+head(raw)
+
+str(raw)
+
+
+threshold <- 1
+
+col = colorRampPalette(c('black',"purple",'orange'))(50)[as.numeric(cut(raw[2000:5000,2],breaks = 50))]
+
+par(mfrow = c(1, 1), mar = c(2, 2, 2, 2) )
+with(raw[2000:5000,], plot(Date, Light, type = "o", pch=16,  col = col, cex = 0.5))
+abline(h=threshold, col="orange", lty = 2, lwd = 2)
+
+
+offset <- 12 # adjusts the y-axis to put night (dark shades) in the middle
+
+lightImage( tagdata = raw,
+            offset = offset,
+            zlim = c(0, 20))
+
+tsimageDeploymentLines(raw$Date, lon = lon.calib, lat = lat.calib,
+                       offset = offset, lwd = 3, col = adjustcolor("orange", alpha.f = 0.5))
+
+
+
+twl <- preprocessLight(raw,
+                       threshold = threshold,
+                       offset = offset,
+                       lmax = 20,         # max. light valu
+                       gr.Device = "x11") # MacOS version (and windows)
+
+head(twl)
+
+write.csv(twl, paste0(wd, "/Results/", Species, "/", ID, "_twl.csv"), row.names = F)
+
+
+#######
+
+twl <- read.csv(paste0(wd, "/Results/", Species, "/", ID, "_twl.csv"))
+twl$Twilight <- as.POSIXct(twl$Twilight, tz = "GMT") # get the Twilight times back into the POSIX. class format
+
+
+twl <- twilightEdit(twilights = twl,
+                    offset = offset,
+                    window = 4,           # two days before and two days after
+                    outlier.mins = 45,    # difference in mins
+                    stationary.mins = 25, # are the other surrounding twilights within 25 mins of one another
+                    plot = TRUE)
+
+
+offset <- 12 # adjusts the y-axis to put night (dark shades) in the middle
+
+lightImage( tagdata = raw,
+            offset = offset,
+            zlim = c(0, 4))
+
+tsimagePoints(twl$Twilight, offset = offset, pch = 16, cex = 1.2,
+              col = ifelse(twl$Deleted, "grey20", ifelse(twl$Rise, "firebrick", "cornflowerblue")))
+
+
+twl <- subset(twl, !Deleted) # only rows that are not marked as deleted.
+
+
+## Raw Calibration
+
+twl.gl  <- export2GeoLight(twl)
+head(twl.gl)
+
+
+lightImage(tagdata = raw,
+           offset = offset,
+           zlim = c(0, 4))
+
+tsimageDeploymentLines(twl$Twilight, lon.calib, lat.calib, offset = offset,
+                       lwd = 2, col = adjustcolor("orange", alpha.f = 0.8))
+
+tm1 <- c(as.POSIXct("2016-06-15"), as.POSIXct("2016-07-15"))  #15/06 - 15/07
+tm2<- c(as.POSIXct("2017-04-01"), as.POSIXct("2017-04-18"))
+
+abline(v = tm1, lty = c(1,2), col = "firebrick", lwd = 1.5)
+abline(v = tm2, lty = c(1,2), col = "firebrick", lwd = 1.5)
+
+
+d.calib <- subset(twl.gl, (tFirst>=tm1[1] & tSecond<=tm1[2]) |
+                    (tFirst>=tm2[1] & tSecond<=tm2[2]))
+
+
+gE<- getElevation(twl = d.calib, known.coord = c(lon.calib, lat.calib),
+                  method = "gamma")
+gE
+
+
+## Raw location estimation
+
+crds <- coord(twl.gl, degElevation = 90-gE[1], note = FALSE)
+
+gg_tripMap <- tripMap(crds, xlim = c(-20, 30), ylim = c(-10, 60))
+
+
+point_sf <- dplyr::tibble(lon = lon.calib, lat = lat.calib) %>%
+  st_as_sf(coords = c('lon', 'lat'), crs = 4326) %>% st_as_sfc()
+
+
+gg_tripMap +
+  geom_sf(data = point_sf, mapping = aes(geometry = geometry),
+          color = "white")
+
+
+## Hill-Ekstrom calibration
+
+cL <- changeLight(twl = twl.gl, quantile = 0.97)
+
+StartEnd <- range(which(twl$Twilight>=(min(twl.gl$tFirst[cL$site==5])+5*24*60*60) &
+                          twl$Twilight<=(max(twl.gl$tFirst[cL$site==5])+5*24*60*60)))
+
+# Arbitrary range knowing the species migratory phenology
+StartEnd <- range(which(
+  twl$Twilight >= as.POSIXct("2016-11-15 00:00:00", tz = "UTC") &
+    twl$Twilight <= as.POSIXct("2017-02-15 23:59:59", tz = "UTC")
+))
+
+
+HE <- findHEZenith(twl, range = StartEnd)
+
+
+
+## Location using this calibration
+
+crds <- coord(twl.gl, degElevation = 90-HE)
+
+gg_tripMap <- tripMap(crds, xlim = c(-20, 30), ylim = c(-10, 60))
+
+point_sf <- dplyr::tibble(lon = lon.calib, lat = lat.calib) %>%
+  st_as_sf(coords = c('lon', 'lat'), crs = 4326) %>% st_as_sfc()
+
+point_sf <- dplyr::tibble(lon = lon.calib, lat = lat.calib) %>%
+  st_as_sf(coords = c('lon', 'lat'), crs = 4326) %>% st_as_sfc()
+
+
+## Movement analysis
+
+cL <- changeLight(twl = twl.gl, quantile = 0.97, days = 1)
+
+
+# ## may take several minutes to complete  ## Or even kill your computer...
+# mS <- mergeSites2(twl = twl.gl, site = cL$site,
+#                   distThreshold = 500,
+#                   degElevation = gE[2]-0.75,         # the HE corrected zero sun elevation angle
+#                   alpha = gE[3:4], method = "gamma", # parameters and model of the twilight errro
+#                   mask = "land")                     # mask option
+
+
+
+
+
+#### SGAT #############
+#######
+library(SGAT)
+
+twl <- read.csv(paste0(wd, "/Results/", Species, "/", ID, "_twl.csv"))
+twl$Twilight <- as.POSIXct(twl$Twilight, tz = "GMT") # get the Twilight times back into the POSIX. class format
+
+
+twl <- twilightEdit(twilights = twl,
+                    offset = offset,
+                    window = 4,           # two days before and two days after
+                    outlier.mins = 45,    # difference in mins
+                    stationary.mins = 25, # are the other surrounding twilights within 25 mins of one another
+                    plot = TRUE)
+
+
+offset <- 12 # adjusts the y-axis to put night (dark shades) in the middle
+
+lightImage( tagdata = raw,
+            offset = offset,
+            zlim = c(0, 4))
+
+tsimagePoints(twl$Twilight, offset = offset, pch = 16, cex = 1.2,
+              col = ifelse(twl$Deleted, "grey20", ifelse(twl$Rise, "firebrick", "cornflowerblue")))
+
+
+twl <- subset(twl, !Deleted) # only rows that are not marked as deleted.
+
+
+twl <- twilightEdit(twilights = twl,
+                    offset = offset,
+                    window = 4,           # two days before and two days after
+                    outlier.mins = 45,    # difference in mins
+                    stationary.mins = 25, # are the other surrounding twilights within 25 mins of one another
+                    plot = TRUE)
+
+## Raw Calibration
+
+
+ightImage( tagdata = raw,
+           offset = offset,
+           zlim = c(0, 20))
+
+tsimageDeploymentLines(twl$Twilight, lon.calib, lat.calib, offset, lwd = 2, col = "orange")
+
+tm.calib <- as.POSIXct(c("2016-06-15", "2016-07-15"), tz = "UTC")
+abline(v = tm.calib, lwd = 2, lty = 2, col = "orange")
+
+
+d_calib <- subset(twl, Twilight>=tm.calib[1] & Twilight<=tm.calib[2])
+
+
+calib <- thresholdCalibration(d_calib$Twilight, d_calib$Rise, lon.calib, lat.calib, method = "gamma")
+
+zenith  <- calib[1]
+zenith0 <- calib[2]
+
+alpha <- calib[3:4]
+
+
+## Hill-Ekstrom calibration
+
+# Arbitrary range knowing the species migratory phenology
+startDate <- "2016-11-15"
+endDate   <- "2017-02-15"
+
+start = min(which(as.Date(twl$Twilight) == startDate))
+end = max(which(as.Date(twl$Twilight) == endDate))
+
+(zenith_sd <- findHEZenith(twl, tol=0.01, range=c(start,end)))
+
+
+#### Movement model
+beta  <- c(2.2, 0.08)
+matplot(0:100, dgamma(0:100, beta[1], beta[2]),
+        type = "l", col = "orange",lty = 1,lwd = 2,ylab = "Density", xlab = "km/h")
+
+
+
+path <- thresholdPath(twl$Twilight, twl$Rise, zenith = zenith, tol=0.01)
+
+x0 <- path$x
+z0 <- trackMidpts(x0)
+
+data(wrld_simpl)
+plot(x0, type = "n", xlab = "", ylab = "")
+plot(wrld_simpl, col = "grey95", add = T)
+
+points(path$x, pch=19, col="cornflowerblue", type = "o")
+points(lon.calib, lat.calib, pch = 16, cex = 2.5, col = "firebrick")
+box()
+
+
+
+fixedx <- rep(F, nrow(x0))
+fixedx[1:30] <- T # first 30 location estimates
+
+fixedx[(nrow(x0) - 1):nrow(x0)] <- T # last two location estimates
+
+x0[fixedx, 1] <- lon.calib
+x0[fixedx, 2] <- lat.calib
+
+z0 <- trackMidpts(x0) # we need to update the z0 locations
+
+
+#### Land mask
+
+earthseaMask <- function(xlim, ylim, n = 2, pacific=FALSE) {
+
+  if (pacific) { wrld_simpl <- nowrapRecenter(wrld_simpl, avoidGEOS = TRUE)}
+
+  # create empty raster with desired resolution
+  r = raster(nrows = n * diff(ylim), ncols = n * diff(xlim), xmn = xlim[1],
+             xmx = xlim[2], ymn = ylim[1], ymx = ylim[2], crs = proj4string(wrld_simpl))
+
+  # create a raster for the stationary period, in this case by giving land a value of 1 and sea NA
+  mask = cover(rasterize(elide(wrld_simpl, shift = c(-360, 0)), r, 1, silent = TRUE),
+               rasterize(wrld_simpl, r, 1, silent = TRUE),
+               rasterize(elide(wrld_simpl,shift = c(360, 0)), r, 1, silent = TRUE))
+
+  xbin = seq(xmin(mask),xmax(mask),length=ncol(mask)+1)
+  ybin = seq(ymin(mask),ymax(mask),length=nrow(mask)+1)
+
+  function(p) mask[cbind(.bincode(p[,2],ybin),.bincode(p[,1],xbin))]
+}
+
+
+
+xlim <- range(x0[,1]+c(-5,5))
+ylim <- range(x0[,2]+c(-5,5))
+
+mask <- earthseaMask(xlim, ylim, n = 1)
+
+
+## Define the log prior for x and z
+log.prior <- function(p) {
+  f <- mask(p)
+  ifelse(f | is.na(f), log(2), log(1))
+}
+
+
+model <- thresholdModel(twilight = twl$Twilight,
+                        rise = twl$Rise,
+                        twilight.model = "ModifiedGamma",
+                        alpha = alpha,
+                        beta = beta,
+                        logp.x = log.prior, logp.z = log.prior,
+                        x0 = x0,
+                        z0 = z0,
+                        zenith = zenith0,
+                        fixedx = fixedx)
+
+
+proposal.x <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(x0))
+proposal.z <- mvnorm(S=diag(c(0.0025,0.0025)),n=nlocation(z0))
+
+fit <- estelleMetropolis(model, proposal.x, proposal.z, iters = 1000, thin = 20)
+
+
+
+### Output tunning
+
+x0 <- chainLast(fit$x)
+z0 <- chainLast(fit$z)
+
+model <- thresholdModel(twilight = twl$Twilight,
+                        rise = twl$Rise,
+                        twilight.model = "Gamma",
+                        alpha = alpha,
+                        beta = beta,
+                        logp.x = log.prior, logp.z = log.prior,
+                        x0 = x0,
+                        z0 = z0,
+                        zenith = zenith0,
+                        fixedx = fixedx)
+
+
+##
+
+x.proposal <- mvnorm(S = diag(c(0.005, 0.005)), n = nrow(twl))
+z.proposal <- mvnorm(S = diag(c(0.005, 0.005)), n = nrow(twl) - 1)
+
+
+for (k in 1:3) {
+  fit <- estelleMetropolis(model, x.proposal, z.proposal, x0 = chainLast(fit$x),
+                           z0 = chainLast(fit$z), iters = 300, thin = 20)
+
+  x.proposal <- mvnorm(chainCov(fit$x), s = 0.2)
+  z.proposal <- mvnorm(chainCov(fit$z), s = 0.2)
+}
+
+
+##
+opar <- par(mfrow = c(2, 1), mar = c(3, 5, 2, 1) + 0.1)
+matplot(t(fit$x[[1]][!fixedx, 1, ]), type = "l", lty = 1, col = "dodgerblue", ylab = "Lon")
+matplot(t(fit$x[[1]][!fixedx, 2, ]), type = "l", lty = 1, col = "firebrick", ylab = "Lat")
+par(opar)
+
+
+
+######
+###### Final Run
+
+x.proposal <- mvnorm(chainCov(fit$x), s = 0.25)
+z.proposal <- mvnorm(chainCov(fit$z), s = 0.25)
+
+fit <- estelleMetropolis(model, x.proposal, z.proposal, x0 = chainLast(fit$x),
+                         z0 = chainLast(fit$z), iters = 10000, thin = 20)
+
+
+
+## Result plotting
+
+sm <- locationSummary(fit$z)
+head(sm)
+
+library(dplyr)
+
+# Supposons que fit$x[[1]] contient [temps, coord (lon/lat), itérations]
+x_array <- fit$x[[1]]  # dimensions : [time, coord, iterations]
+
+# Récupérer le nombre de temps et d'itérations
+n_time <- dim(x_array)[1]
+n_iter <- dim(x_array)[3]
+
+# Initialiser liste pour stocker les résumés
+summary_list <- vector("list", n_time)
+
+for (t in 1:n_time) {
+  # Extraire les positions pour ce temps (itérations x coord)
+  pos <- x_array[t, , ]  # dimensions : coord x iter
+  pos <- t(pos)           # mettre en iter x coord
+
+  # Calculer statistiques pour lon et lat
+  lon <- pos[,1]
+  lat <- pos[,2]
+
+  summary_list[[t]] <- data.frame(
+    Time = t,  # ou utiliser fit$model$time[t] si dates disponibles
+    Lon.mean = mean(lon),
+    Lon.sd = sd(lon),
+    Lon.50p = median(lon),
+    Lon.2.5p = quantile(lon, 0.025),
+    Lon.97.5p = quantile(lon, 0.975),
+    Lat.mean = mean(lat),
+    Lat.sd = sd(lat),
+    Lat.50p = median(lat),
+    Lat.2.5p = quantile(lat, 0.025),
+    Lat.97.5p = quantile(lat, 0.975)
+  )
+}
+
+# Combiner tous les temps en un data.frame
+sm <- bind_rows(summary_list)
+
+# Si tu as les dates exactes dans fit$model$time, tu peux les remplacer
+sm$Time <- fit$model$time[1:n_time]
+
+# Visualiser
+head(sm)
+
+
+# empty raster of the extent
+r <- raster(nrows = 2 * diff(ylim), ncols = 2 * diff(xlim), xmn = xlim[1]-5,
+            xmx = xlim[2]+5, ymn = ylim[1]-5, ymx = ylim[2]+5, crs = proj4string(wrld_simpl))
+
+s <- slices(type = "intermediate", breaks = "week", mcmc = fit, grid = r)
+sk <- slice(s, sliceIndices(s))
+
+plot(sk, useRaster = F,col = rev(viridis::viridis(50)))
+plot(wrld_simpl, xlim=xlim, ylim=ylim,add = T, bg = adjustcolor("black",alpha=0.1))
+
+lines(sm[,"Lon.50%"], sm[,"Lat.50%"], col = adjustcolor("firebrick", alpha.f = 0.6), type = "o", pch = 16)
+
+####
+library(sp)
+library(raster)
+
+# Si sm$Time est déjà POSIXct
+sm$TimeMid <- as.POSIXct(sm$Time)
+
+
+# Définir les périodes à exclure
+exclude_periods <- list(
+  c(as.POSIXct("2016-09-01"), as.POSIXct("2016-10-13")),
+  c(as.POSIXct("2017-02-27"), as.POSIXct("2017-04-10"))
+)
+
+# Filtrer sm
+sm_filtered <- sm
+for (period in exclude_periods) {
+  sm_filtered <- sm_filtered[!(sm_filtered$TimeMid >= period[1] & sm_filtered$TimeMid <= period[2]), ]
+}
+
+# Définir limites pour la carte
+xlim <- range(sm_filtered$Lon.2.5p, sm_filtered$Lon.97.5p)
+ylim <- range(sm_filtered$Lat.2.5p, sm_filtered$Lat.97.5p)
+
+# Tracer carte de fond
+plot(wrld_simpl, xlim = xlim, ylim = ylim, col = "lightgrey", bg = "lightblue", border = "white")
+
+# Ajouter intervalles de confiance
+polygon(x = c(sm_filtered$Lon.2.5p, rev(sm_filtered$Lon.97.5p)),
+        y = c(sm_filtered$Lat.2.5p, rev(sm_filtered$Lat.97.5p)),
+        col = adjustcolor("grey", alpha.f = 0.3),
+        border = NA)
+
+# Ajouter trajectoire médiane
+lines(sm_filtered$Lon.50p, sm_filtered$Lat.50p, col = "firebrick", lwd = 2, type = "o", pch = 16)
+
+# Ajouter points
+points(sm_filtered$Lon.50p, sm_filtered$Lat.50p, col = "firebrick", pch = 16)
+
+
+########################################################################################################################
+write.csv(sm_filtered,
+          paste0(wd, "/Results/", Species, "/", ID, "sm_filtered_meaned_periods.csv"),
+          row.names = F)
+
+
+par(mfrow=c(2,1),mar=c(4,4,1,1))
+plot(sm$Time1, sm$"Lon.50%", ylab = "Longitude", xlab = "", yaxt = "n", type = "n", ylim = c(-5, 25))
+axis(2, las = 2)
+polygon(x=c(sm$Time1,rev(sm$Time1)), y=c(sm$`Lon.2.5%`,rev(sm$`Lon.97.5%`)), border="gray", col="gray")
+lines(sm$Time1,sm$"Lon.50%", lwd = 2)
+
+plot(sm$Time1,sm$"Lat.50%", type="n", ylab = "Latitude", xlab = "", yaxt = "n", ylim = c(-20,60))
+axis(2, las = 2)
+polygon(x=c(sm$Time1,rev(sm$Time1)), y=c(sm$`Lat.2.5%`,rev(sm$`Lat.97.5%`)), border="gray", col="gray")
+lines(sm$Time1,sm$"Lat.50%", lwd = 2)
+
+
+# Créer une colonne TimeMid de type POSIXct
+sm$TimeMid <- as.POSIXct(sm$Time)
+
+# Vérifier
+head(sm$TimeMid)
+
+# Tracer longitude
+par(mfrow=c(2,1), mar=c(4,4,1,1))
+plot(sm$TimeMid, sm$Lon.50p, type="n", ylab="Longitude", xlab="", ylim=c(min(sm$Lon.2.5p), max(sm$Lon.97.5p)))
+polygon(x = c(sm$TimeMid, rev(sm$TimeMid)),
+        y = c(sm$Lon.2.5p, rev(sm$Lon.97.5p)),
+        col = adjustcolor("gray", alpha.f = 0.3), border=NA)
+lines(sm$TimeMid, sm$Lon.50p, col="firebrick", lwd=2)
+
+# Tracer latitude
+plot(sm$TimeMid, sm$Lat.50p, type="n", ylab="Latitude", xlab="", ylim=c(min(sm$Lat.2.5p), max(sm$Lat.97.5p)))
+polygon(x = c(sm$TimeMid, rev(sm$TimeMid)),
+        y = c(sm$Lat.2.5p, rev(sm$Lat.97.5p)),
+        col = adjustcolor("gray", alpha.f = 0.3), border=NA)
+lines(sm$TimeMid, sm$Lat.50p, col="firebrick", lwd=2)
+
+
+
+
+### Result saving
+write.csv(sm,
+          paste0(wd, "/Results/", Species, "/", ID, "_SGATSummary.csv"),
+          row.names = F)
+
+save(fit,
+     file = paste0(wd, "/Results/", Species, "/", ID, "_SGATfit.Rdata"),
+     compress = T)
+
+#####
+###### Group Model
+
+geo_twl <- export2GeoLight(twl)
+
+# Often it is necessary to play around with quantile and days
+# quantile defines how many stopovers there are. the higher, the fewer there are
+# days indicates the duration of the stopovers
+cL <- changeLight(twl=geo_twl, quantile=0.97, summary = F, days = 2, plot = T)
+
+# merge site helps to put sites together that are separated by single outliers.
+mS <- mergeSites(twl = geo_twl, site = cL$site, degElevation = 90-zenith0, distThreshold = 500)
+
+
+
+
+
+##############################################
+
+
+library(dplyr)
+library(lubridate)
+
+
+all_locs <- cbind(twl.gl, crds)
+
+#Mue + equinoxes on suprime du 15/07 au 15/10
+
+# Conversion des colonnes temporelles au bon format
+all_locs <- all_locs %>%
+  mutate(
+    tFirst = as.POSIXct(tFirst, tz = "UTC"),
+    tSecond = as.POSIXct(tSecond, tz = "UTC"),
+    month_day = format(tFirst, "%m-%d")  # extrait mois-jour
+  )
+
+# Filtrer pour conserver uniquement les lignes en dehors du 15/07 - 01/10
+all_locs<- all_locs %>%
+  filter(!(month_day >= "07-15" & month_day <= "10-15"))
+
+
+# Extraction du tableau des périodes stationnaires
+cl_df <- cL$migTable
+
+cl_df[1,2] <- c(as.POSIXct("2016-06-15"))
+cl_df[9,3] <- c(as.POSIXct("2017-04-15"))
+
+# Conversion des dates dans all_locs
+all_locs <- all_locs %>%
+  mutate(
+    tFirst = as.POSIXct(tFirst, tz = "UTC"),
+    tSecond = as.POSIXct(tSecond, tz = "UTC")
+  )
+
+# Calcul des statistiques pour chaque période
+stationary_stats <- cl_df %>%
+  filter(!is.na(Arrival) & !is.na(Departure)) %>%
+  rowwise() %>%
+  mutate(
+    mean_lon = mean(all_locs$lon[
+      all_locs$tSecond >= Arrival & all_locs$tFirst <= Departure
+    ], na.rm = TRUE),
+    mean_lat = mean(all_locs$lat[
+      all_locs$tSecond >= Arrival & all_locs$tFirst <= Departure
+    ], na.rm = TRUE),
+    sd_lon   = sd(all_locs$lon[
+      all_locs$tSecond >= Arrival & all_locs$tFirst <= Departure
+    ], na.rm = TRUE),
+    sd_lat   = sd(all_locs$lat[
+      all_locs$tSecond >= Arrival & all_locs$tFirst <= Departure
+    ], na.rm = TRUE),
+    n_locs = sum(all_locs$tSecond >= Arrival & all_locs$tFirst <= Departure)
+  ) %>%
+  ungroup() %>%
+  mutate(duration_days = as.numeric(difftime(Departure, Arrival, units = "days")))
+
+# Vérif
+stationary_stats %>%
+  select(Site, Arrival, Departure, duration_days, n_locs,
+         mean_lon, sd_lon, mean_lat, sd_lat)
+
+
+
+
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(viridis)
+
+# Charger la carte de l'Europe
+europe <- ne_countries(continent = "Europe", scale = "medium", returnclass = "sf")
+
+# Calcul du jour de l'année (pour la couleur)
+stationary_stats <- stationary_stats %>%
+  mutate(
+    mean_date = Arrival + (Departure - Arrival) / 2,
+    doy = yday(mean_date) # jour de l'année, 1–365
+  )
+
+# Graphique
+ggplot() +
+  # Fond de carte de l'Europe
+  geom_sf(data = europe, fill = "grey95", color = "grey70", linewidth = 0.3) +
+
+  # Ligne reliant les sites (trajet)
+  geom_path(
+    data = stationary_stats,
+    aes(x = mean_lon, y = mean_lat, group = 1),
+    color = "grey50", linewidth = 0.8, alpha = 0.7
+  ) +
+
+  # Barres d'erreur verticales et horizontales (écarts-types)
+  geom_errorbar(
+    data = stationary_stats,
+    aes(x = mean_lon, ymin = mean_lat - sd_lat, ymax = mean_lat + sd_lat),
+    color = "black", alpha = 0.4, width = 0
+  ) +
+  geom_errorbar(
+    data = stationary_stats,
+    aes(y = mean_lat, xmin = mean_lon - sd_lon, xmax = mean_lon + sd_lon),
+    color = "black", alpha = 0.4, width = 0, orientation = "y"
+  ) +
+
+  # Points : remplissage selon la période de l’année
+  geom_point(
+    data = stationary_stats,
+    aes(x = mean_lon, y = mean_lat, size = duration_days, fill = doy),
+    shape = 21, color = "black", stroke = 0.8, alpha = 0.9
+  ) +
+
+  # Palette viridis sur le remplissage
+  scale_fill_viridis_c(
+    option = "plasma",
+    name = "Jour de l'année",
+    direction = 1
+  ) +
+
+  # Taille proportionnelle à la durée
+  scale_size_continuous(
+    name = "Durée (jours)",
+    range = c(3, 12)
+  ) +
+
+  coord_sf(
+    xlim = c(-20, 20),   # ajuste selon ta zone d'étude
+    ylim = c(-10, 60),
+    expand = FALSE
+  ) +
+
+  theme_minimal(base_size = 15) +
+  theme(
+    panel.background = element_rect(fill = "aliceblue"),
+    plot.title = element_text(face = "bold", hjust = 0.5),
+    legend.position = "right",
+    legend.box = "vertical"
+  ) +
+  labs(
+    x = "Longitude",
+    y = "Latitude",
+    title = "Progression temporelle des sites stationnaires\n(Couleur = période de l'année)"
+  )
+
+
+write.csv(stationary_stats,
+          paste0(wd, "/Results/", Species, "/", ID, "_meaned_statironary periods.csv"),
+          row.names = F)

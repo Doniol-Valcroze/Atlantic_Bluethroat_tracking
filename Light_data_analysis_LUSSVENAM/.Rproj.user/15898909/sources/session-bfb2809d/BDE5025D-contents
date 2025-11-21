@@ -1,0 +1,261 @@
+
+library(dplyr)
+library(lubridate)
+
+# 🔹 Dossier contenant tes fichiers SGATSummary
+wd <- "C:/Users/pdoniolvalcroze/Desktop/Admin_MNHN/LUSSVENAM_Short_Com/DATA LUSSVENAM/Light_data_analysis_LUSSVENAM/data/Results/LusSve"
+
+
+# 🔹 Trouver tous les fichiers qui correspondent au pattern
+files <- list.files(wd, pattern = "_SGATSummary\\.csv$", full.names = TRUE)
+
+if (length(files) == 0) stop("Aucun fichier _SGATSummary.csv trouvé.")
+
+# 🔹 Charger tous les fichiers et les combiner
+all_data <- files %>%
+  lapply(function(f) {
+    df <- read.csv(f, stringsAsFactors = FALSE)
+    df$source_file <- basename(f)
+    return(df)
+  }) %>%
+  bind_rows()
+
+# Vérification du format de la colonne Time
+all_data$Time <- as.POSIXct(all_data$Time, tz = "UTC")
+
+# 🔹 Créer des colonnes mois/jour
+all_data <- all_data %>%
+  mutate(month = month(Time),
+         day = day(Time))
+
+# 🔹 Filtrer entre 15 novembre et 15 février
+winter_data <- all_data %>%
+  filter(
+    (month == 11 & day >= 15) |  # 15–30 nov
+      (month == 12) |              # déc entier
+      (month == 1)  |              # jan entier
+      (month == 2 & day <= 15)     # 1–15 fév
+  )
+
+# 🔹 Calculer moyennes et écart-types par fichier
+winter_summary <- winter_data %>%
+  group_by(source_file) %>%
+  summarise(
+    Lon_mean_mean = mean(Lon.mean, na.rm = TRUE),
+    Lon_mean_sd   = sd(Lon.mean, na.rm = TRUE),
+    Lat_mean_mean = mean(Lat.mean, na.rm = TRUE),
+    Lat_mean_sd   = sd(Lat.mean, na.rm = TRUE),
+    n_obs = n()
+  )
+
+# 🔹 Afficher le résultat
+print(winter_summary)
+
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(dplyr)
+
+# 1️⃣ Convertir ton tibble en sf points
+points_sf <- winter_summary %>%
+  mutate(ID = gsub("_SGATSummary\\.csv$", "", source_file)) %>%
+  st_as_sf(coords = c("Lon_mean_mean", "Lat_mean_mean"), crs = 4326) # WGS84
+
+# 2️⃣ Charger la carte de l’Europe de l’Ouest
+europe <- rnaturalearth::ne_countries(scale = "medium", continent = "Europe", returnclass = "sf")
+
+
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(dplyr)
+
+# Limites de la carte (Europe de l’Ouest)
+xlim <- c(-15, 10)
+ylim <- c(35, 50)
+
+# Carte de l’Europe
+europe <- rnaturalearth::ne_countries(scale = "medium", continent = "Europe", returnclass = "sf")
+
+# Transformer ID en facteur pour ggplot
+winter_summary <- winter_summary %>%
+  mutate(ID = factor(gsub("_SGATSummary\\.csv$", "", source_file)))
+
+# Coordonnées du point de calibration
+lon.calib <- -0.81
+lat.calib <- 45.47
+
+# Plot
+ggplot() +
+  geom_sf(data = europe, fill = "gray95", color = "gray50") +
+
+  # Barres d'erreur verticales
+  geom_errorbar(data = winter_summary,
+                aes(x = Lon_mean_mean,
+                    ymin = Lat_mean_mean - Lat_mean_sd,
+                    ymax = Lat_mean_mean + Lat_mean_sd,
+                    color = ID),
+                width = 0.2) +
+
+  # Barres d'erreur horizontales
+  geom_errorbarh(data = winter_summary,
+                 aes(y = Lat_mean_mean,
+                     xmin = Lon_mean_mean - Lon_mean_sd,
+                     xmax = Lon_mean_mean + Lon_mean_sd,
+                     color = ID),
+                 height = 0.2) +
+
+  # Points moyens
+  geom_point(data = winter_summary,
+             aes(x = Lon_mean_mean, y = Lat_mean_mean, color = ID), size = 3) +
+
+  # Triangle calibration
+  geom_point(aes(x = lon.calib, y = lat.calib), shape = 17, size = 4, color = "black") +
+
+  coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+  scale_color_brewer(palette = "Set1") +
+  theme_minimal(base_size = 14) +
+  labs(x = "Longitude", y = "Latitude", color = "Individu")
+
+
+
+
+
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(dplyr)
+
+# Limites de la carte (Europe de l’Ouest)
+xlim <- c(-15, 10)
+ylim <- c(35, 50)
+
+# Carte de l’Europe
+europe <- rnaturalearth::ne_countries(scale = "medium", continent = "Europe", returnclass = "sf")
+
+# Transformer ID en facteur
+winter_data <- winter_data %>%
+  mutate(ID = factor(gsub("_SGATSummary\\.csv$", "", source_file)))
+
+# Créer un graphique par individu
+ggplot(winter_data) +
+  geom_sf(data = europe, fill = "gray95", color = "gray50") +
+
+  # Densité spatiale
+  stat_density_2d(aes(x = Lon.mean, y = Lat.mean, fill = ..level..),
+                  geom = "polygon", alpha = 0.6, color = NA) +
+
+  # Points pour repères (optionnel)
+  geom_point(aes(x = Lon.mean, y = Lat.mean), size = 0.5, color = "black", alpha = 0.3) +
+
+  # Séparation par individu
+  facet_wrap(~ID) +
+
+  # Coordonnées fixes
+  coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+
+  # Palette de chaleur
+  scale_fill_viridis_c(option = "C", name = "Densité") +
+
+  theme_minimal(base_size = 14) +
+  labs(x = "Longitude", y = "Latitude")
+
+
+
+
+
+library(ggplot2)
+library(sf)
+library(rnaturalearth)
+library(dplyr)
+
+# Limites de la carte (Europe de l’Ouest)
+xlim <- c(-15, 10)
+ylim <- c(34, 50)
+
+# Carte de l’Europe
+europe <- rnaturalearth::ne_countries(scale = "medium", continent = "Europe", returnclass = "sf")
+
+# Préparer les données
+# winter_data : toutes les positions hivernales par individu
+winter_data <- winter_data %>%
+  mutate(ID = factor(gsub("_SGATSummary\\.csv$", "", source_file)))
+
+# winter_summary : points moyens et SD par individu
+winter_summary <- winter_summary %>%
+  mutate(ID = factor(gsub("_SGATSummary\\.csv$", "", source_file)))
+
+
+# Remplacer la 4ème couleur (#FF7F00) par du violet foncé (#6A3D9A)
+my_colors <- c("#E41A1C", "#377EB8", "#4DAF4A", "gray20")
+
+
+
+# Plot
+ggplot() +
+  # Carte de fond
+  geom_sf(data = europe, fill = "gray95", color = "gray50") +
+
+  # Densité spatiale des positions
+  stat_density_2d(data = winter_data,
+                  aes(x = Lon.mean, y = Lat.mean, fill = ..level..),
+                  geom = "polygon", alpha = 0.6, color = NA) +
+
+  # Points moyens
+  geom_point(data = winter_summary,
+             aes(x = Lon_mean_mean, y = Lat_mean_mean, color = ID),
+             size = 3) +
+
+  # Barres d'erreur verticales (latitude)
+  geom_errorbar(data = winter_summary,
+                aes(x = Lon_mean_mean,
+                    ymin = Lat_mean_mean - Lat_mean_sd,
+                    ymax = Lat_mean_mean + Lat_mean_sd,
+                    color = ID),
+                width = 0.2) +
+
+  # Barres d'erreur horizontales (longitude)
+  geom_errorbarh(data = winter_summary,
+                 aes(y = Lat_mean_mean,
+                     xmin = Lon_mean_mean - Lon_mean_sd,
+                     xmax = Lon_mean_mean + Lon_mean_sd,
+                     color = ID),
+                 height = 0.2) +
+
+  # Séparer par individu
+  facet_wrap(~ID) +
+
+  # Coordonnées fixes
+  coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+
+  # Palettes de couleur
+  scale_fill_viridis_c(option = "C", name = "Point density") +
+  scale_color_manual(values = my_colors) +
+  theme_minimal(base_size = 14) +
+  labs(x = "Longitude", y = "Latitude", color = "Individual")
+
+
+
+# Nom du fichier de sortie
+output_file <- "WinterDensityPlot.tiff"
+
+# Sauvegarder le plot
+ggsave(filename = output_file,
+       plot = last_plot(),     # ou mettre ton objet ggplot si assigné à une variable
+       device = "tiff",
+       width = 12,             # largeur en pouces
+       height = 8,             # hauteur en pouces
+       units = "in",
+       dpi = 600,              # haute résolution pour publication
+       compression = "lzw")    # compression sans perte
+
+
+
+
+
+# 🔹 Sauvegarder le tableau récapitulatif
+write.csv(winter_summary,
+          file = file.path(wd, "Winter_Mean_SD_Summary.csv"),
+          row.names = FALSE)
+
+message("✅ Résumé hivernal enregistré dans : ", file.path(wd, "Winter_Mean_SD_Summary.csv"))
